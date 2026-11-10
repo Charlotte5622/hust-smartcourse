@@ -5,6 +5,7 @@
 **华中科技大学「智慧课程 / 超星」视频播完，自动切到下一节**
 
 [![Version](https://img.shields.io/badge/version-1.8.0-2d8cf0?style=flat-square)](https://github.com/Charlotte5622/hust-smartcourse)
+[![Release](https://img.shields.io/github/v/release/Charlotte5622/hust-smartcourse?style=flat-square&color=22c55e&label=release)](https://github.com/Charlotte5622/hust-smartcourse/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-22c55e?style=flat-square)](LICENSE)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-supported-orange?style=flat-square)](https://www.tampermonkey.net/)
 [![Violentmonkey](https://img.shields.io/badge/Violentmonkey-supported-blueviolet?style=flat-square)](https://violentmonkey.github.io/)
@@ -61,7 +62,8 @@
 
 **方式 A：从文件导入（推荐，火狐必须这样）**
 
-1. 下载 [`hust-smartcourse-auto-next.user.js`](https://raw.githubusercontent.com/Charlotte5622/hust-smartcourse/main/hust-smartcourse-auto-next.user.js)
+1. 下载 **[最新 Release](https://github.com/Charlotte5622/hust-smartcourse/releases/latest)** 里的 `hust-smartcourse-auto-next.user.js`
+   （或直接点这个固定链接：[`releases/latest/download/hust-smartcourse-auto-next.user.js`](https://github.com/Charlotte5622/hust-smartcourse/releases/latest/download/hust-smartcourse-auto-next.user.js)）
 2. 打开 Tampermonkey 面板 → **实用工具 / Utilities**
 3. 「导入」区域 → 选择文件 → 选中刚下载的 `.user.js`
 4. 弹出安装页 → 点 **安装**
