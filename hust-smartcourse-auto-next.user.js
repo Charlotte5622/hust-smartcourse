@@ -2,7 +2,7 @@
 // @name         HUST SmartCourse 自动连播下一节
 // @name:en      HUST SmartCourse Auto Next
 // @namespace    https://github.com/Charlotte5622/hust-smartcourse
-// @version      1.7.0
+// @version      1.7.1
 // @description  超星/智慧课程视频播完后自动点击目录里的下一节，支持顺序连播、跨 iframe 目录识别、防多跳
 // @author       Charlotte5622
 // @homepageURL  https://github.com/Charlotte5622/hust-smartcourse
@@ -312,6 +312,18 @@
     return docs;
   }
 
+  // 取章节标题：优先取"名字"元素的文本，并去掉末尾的"未完成任务点"计数角标
+  // （目录行里除了章节名，还有个橙色数字角标，直接取整行文本会拖一个数字尾巴）
+  function nodeTitle(el) {
+    let nameEl = null;
+    if (el.matches && el.matches('[class*="name"], [class*="title"]')) nameEl = el;
+    if (!nameEl && el.querySelector) nameEl = el.querySelector('[class*="name"], [class*="title"]');
+    const row = el.closest && el.closest('.chapter_item, li, tr, .catalog_points, .posCatalog_select, .card');
+    const raw = text(nameEl) || text(el) || text(row) || '';
+    const cleaned = raw.replace(/\s+\d{1,2}$/, '').trim();
+    return (cleaned || raw).slice(0, 60);
+  }
+
   function collectFromDoc(doc) {
     let all = [];
     try { all = Array.from(doc.querySelectorAll('[onclick],[href],[data-chapterid],[data-chapter-id]')); } catch (e) { return []; }
@@ -323,11 +335,11 @@
     const out = [];
     const seen = new Set();
     leaves.forEach((el) => {
-      const title = text(el.closest('.chapter_item, li, tr, .catalog_points, .posCatalog_select, .card') || el) || text(el);
+      const title = nodeTitle(el);
       const key = el.tagName + '|' + (el.id || '') + '|' + title + '|' + (el.getAttribute('onclick') || '');
       if (seen.has(key)) return;
       seen.add(key);
-      out.push({ el, title: title.slice(0, 60), ids: extractIds(el), doc });
+      out.push({ el, title, ids: extractIds(el), doc });
     });
     return out;
   }

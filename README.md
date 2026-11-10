@@ -4,7 +4,7 @@
 
 **华中科技大学「智慧课程 / 超星」视频播完，自动切到下一节**
 
-[![Version](https://img.shields.io/badge/version-1.7.0-2d8cf0?style=flat-square)](https://github.com/Charlotte5622/hust-smartcourse)
+[![Version](https://img.shields.io/badge/version-1.7.1-2d8cf0?style=flat-square)](https://github.com/Charlotte5622/hust-smartcourse)
 [![License](https://img.shields.io/badge/license-MIT-22c55e?style=flat-square)](LICENSE)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-supported-orange?style=flat-square)](https://www.tampermonkey.net/)
 [![Violentmonkey](https://img.shields.io/badge/Violentmonkey-supported-blueviolet?style=flat-square)](https://violentmonkey.github.io/)
