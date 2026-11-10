@@ -4,7 +4,7 @@
 
 **华中科技大学「智慧课程 / 超星」视频播完，自动切到下一节**
 
-[![Version](https://img.shields.io/badge/version-1.8.0-2d8cf0?style=flat-square)](https://github.com/Charlotte5622/hust-smartcourse)
+[![Version](https://img.shields.io/badge/version-1.9.0-2d8cf0?style=flat-square)](https://github.com/Charlotte5622/hust-smartcourse)
 [![Release](https://img.shields.io/github/v/release/Charlotte5622/hust-smartcourse?style=flat-square&color=22c55e&label=release)](https://github.com/Charlotte5622/hust-smartcourse/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-22c55e?style=flat-square)](LICENSE)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-supported-orange?style=flat-square)](https://www.tampermonkey.net/)
@@ -102,8 +102,8 @@ Tampermonkey 面板 → `+` 新建 → 删掉模板 → 粘贴脚本全文 → `
 ┌──────────────────────────────┐
 │ 🎬 自动连播  ●           [—] │  ← 标题栏可拖动，[—] 折叠成小条
 │ 播放中：3.3 职业兴趣，你喜欢… │  ← 实时状态，完整换行不截断
-│ 跳转 3 次 · 跳过测验 1 个     │  ← 本次统计，不会被按钮挤掉
-│ 已跳过：3.10 如何打造核心竞争力│
+│ 跳转 3 次 · 跳过测验 0 个 · 遗留 2 个│  ← 本次统计，不会被按钮挤掉
+│ 待办：2.7 怎样平衡大学学习…、3.10 …│
 │ [⏮ 上一节]  [⏭ 下一节]       │  ← 手动导航，立即执行
 │ [⏩ 下一个未完成] [⏸ 暂停]     │
 └──────────────────────────────┘
@@ -131,6 +131,8 @@ const CFG = {
   nonVideoWaitMs  : 6000,   // 判断任务点类型的等待上限
   contentSettleMs : 1500,   // 点击后等 iframe 换完内容再判断
   maxHopsPerStep  : 10,     // 一次连播最多连续跳过几个非视频节点
+  trackLeftovers  : true,   // 切走后复查上一节是否留下未完成任务点
+  leftoverCheckDelayMs: 3000, // 复查前等多久，给平台时间更新目录
   autoPlay        : true,   // 切换后自动点播放
   muteIfBlocked   : false,  // 自动播放被拦截时，静音重试
   clickPopups     : true,   // 自动关掉"继续观看"类弹窗
@@ -147,6 +149,7 @@ const CFG = {
 | `skipCompleted` | 想连已完成的章节一起重刷 → 保持 `false`；想跳过绿勾章节 → 改 `true` |
 | `skipNonVideo` | 想连章节测验也一起停下来自己做 → 改 `false` |
 | `maxHopsPerStep` | 连续跳过的测验太多想中途停一下 → 调小到 `3` |
+| `trackLeftovers` | 面板上的「遗留」数字虚高（把普通章节也记进去了）→ 改 `false` |
 | `muteIfBlocked` | 切过去后停在暂停状态 → 改 `true`（代价是静音播放） |
 | `clickPopups` | 担心误点弹窗 → 改 `false` |
 | `debug` | 平时嫌日志吵 → 改 `false` |
@@ -194,6 +197,7 @@ __autoNext.incomplete() // 跳到下一个未完成的节点
 __autoNext.ended()    // 模拟"视频播完"的完整流程
 __autoNext.detect()   // 判断当前章节是 video / quiz / unknown
 __autoNext.skipped()  // 本次自动跳过了哪些测验
+__autoNext.pending()  // 完整待办清单（跳过的测验 + 留有未完成任务点的章节）
 __autoNext.off()      // 暂停
 __autoNext.on()       // 启用
 ```
@@ -251,6 +255,8 @@ __autoNext.on()       // 启用
 - **认不出来** → 停下并在面板提示，不猜、不硬跳
 
 被跳过的测验会累积在 `__autoNext.skipped()` 里，方便你回头补做。只想跳过一次几个，把 `maxHopsPerStep` 调小即可。
+
+**注意：很多课程的测验不是独立的目录节点，而是嵌在章节里的第二个任务点。** 这种情况下脚本是从一节视频直接跳到下一节视频，"进入测验页再跳过"这条路根本走不到。所以 1.9.0 加了**切走后复查**：离开一节之后回头看它在目录里打勾了没——没打勾就说明还挂着别的任务点，计入面板上的「**遗留**」。完整的待办清单用 `__autoNext.pending()` 查看。
 
 > ⚠️ 本脚本**不包含也不会包含**任何答题、填答案、自动提交的功能。测验请自己做。
 </details>
@@ -311,7 +317,8 @@ Firefox 的防诈骗保护。在控制台里手动敲 `allow pasting` 回车，�
 
 | 版本 | 内容 |
 |---|---|
-| **1.8.0** | **控制面板重做**：新增「上一节 / 下一节 / 下一个未完成」手动导航按钮；状态与统计分行显示不再被挤掉；面板可拖动、可折叠 |
+| **1.9.0** | **修复"跳过测验"计数不动**：原来只在"进入独立测验节点"时才 +1，而很多课程的测验是**嵌在章节内部**的，根本走不到那个分支。现在改为**切走后复查上一节**——视频看完但目录里仍未打勾，就说明还挂着别的任务点，计入「遗留」。新增 `__autoNext.pending()` |
+| 1.8.0 | **控制面板重做**：新增「上一节 / 下一节 / 下一个未完成」手动导航按钮；状态与统计分行显示不再被挤掉；面板可拖动、可折叠 |
 | 1.7.1 | 章节标题不再混入"未完成任务点"计数角标 |
 | 1.7.0 | **新增自动跳过章节测验/作业**：点击后识别任务点类型，是测验就略过继续往后找视频；认不出类型则停下等你确认。新增 `detect` / `skipped` 调试命令 |
 | 1.6.0 | **默认改为顺序播放**（`skipCompleted: false`）；修复"部分完成的章节被误判为已完成而跳过"；修复循环中反复读取 `chapterId` 导致定位飘移；定位失败时不再从课程第一节开始 |

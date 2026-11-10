@@ -2,7 +2,7 @@
 // @name         HUST SmartCourse 自动连播下一节
 // @name:en      HUST SmartCourse Auto Next
 // @namespace    https://github.com/Charlotte5622/hust-smartcourse
-// @version      1.8.0
+// @version      1.9.0
 // @description  超星/智慧课程视频播完后自动点击目录里的下一节，支持顺序连播、跨 iframe 目录识别、防多跳
 // @author       Charlotte5622
 // @homepageURL  https://github.com/Charlotte5622/hust-smartcourse
@@ -32,6 +32,8 @@
     nonVideoWaitMs  : 6000,  // 点进去后等多久判断任务点类型，超时则视为无法识别
     contentSettleMs : 1500,  // 点击后等 iframe 换完内容再判断类型
     maxHopsPerStep  : 10,    // 一次连播最多连续跳过几个非视频节点
+    trackLeftovers  : true,  // ★切走后复查上一节是否留下未完成任务点（嵌在章节里的测验靠这个才能统计到）
+    leftoverCheckDelayMs: 3000, // 复查前等多久，给平台时间更新目录里的完成标记
     autoPlay        : true,  // 切换章节后，尝试自动点播放
     muteIfBlocked   : false, // 自动播放被浏览器拦截时，是否静音后重试（true 可能会静音播放）
     clickPopups     : true,  // 自动点掉"继续学习 / 下一节"之类的平台弹窗
@@ -53,7 +55,17 @@
   let lastSwitchAt = 0;      // 上次成功切换的时间戳
   let switchCount  = 0;      // 本次打开页面后自动切换的次数
   let retryTimer   = null;   // 冷却期结束后的一次性重试
-  const skippedQuizzes = []; // 本次被自动跳过的测验/作业（只记录，不代答）
+  // 待办清单：被跳过的测验，以及"视频看完但仍留有未完成任务点"的章节
+  // —— 你这门课的测验是嵌在章节内部的，不是独立目录节点，所以后一种才是主要来源
+  const pendingTasks = [];   // { title, kind: 'quiz' | 'left' }
+
+  function addPending(title, kind) {
+    if (!title) return;
+    if (pendingTasks.some((p) => p.title === title)) return;
+    pendingTasks.push({ title, kind });
+    log(`记入待办（${kind === 'quiz' ? '跳过的测验' : '遗留的任务点'}）：${title}`);
+    updateStats();
+  }
 
   /* ==================================================================
    *  通用工具
@@ -193,6 +205,22 @@
     return vids.some((v) => v.ended || (v.duration && isFinite(v.duration) && v.duration - v.currentTime <= 1.5));
   }
 
+  // 切走之后回头看：刚离开的那一节，目录里打勾了吗？
+  // 没打勾 = 它还挂着别的任务点（在你这门课里，多半就是嵌在章节里的测验）
+  async function checkLeftover(node) {
+    await sleep(CFG.leftoverCheckDelayMs);
+    const ns = collectChapterNodes();
+    const hit = ns.find((n) => n.ids.has(node.id));
+    if (!hit) { log('复查遗留：目录里已经找不到该节点了 →', node.title); return; }
+    const st = getCompleteState(hit.el);
+    if (st === false) {
+      addPending(hit.title || node.title, 'left');
+      setStatus(`「${hit.title || node.title}」还有未完成任务点，已记入待办`);
+    } else {
+      log(`复查遗留：${hit.title} → 完成状态 ${st}，无遗留`);
+    }
+  }
+
   /* ==================================================================
    *  二、播放结束后的主流程
    * ================================================================== */
@@ -248,12 +276,21 @@
         }
       }
 
+      // 记下即将离开的这一节，等切走后再回头看它有没有留下未完成任务点
+      const leavingNode = (() => {
+        const ns = collectChapterNodes();
+        const i = findCurrentIndex(ns);
+        return i >= 0 ? { id: currentChapterId(), title: ns[i].title } : null;
+      })();
+
       const ok = await goNextChapter();
       if (ok) {
         switchCount++;
         const gap = lastSwitchAt ? Math.round((Date.now() - lastSwitchAt) / 1000) : 0;
         lastSwitchAt = Date.now();
-        setStatus(`已切换到下一节（本次共 ${switchCount} 次）`);
+        setStatus(`已切换到下一节（${switchCount} 次）`);
+        // 视频看完了，但这一节在目录里若仍未打勾，说明还挂着别的任务点
+        if (CFG.trackLeftovers && leavingNode && leavingNode.id) checkLeftover(leavingNode);
         log(`切换成功，本次打开页面第 ${switchCount} 次自动跳转` + (gap ? `，距上次 ${gap} 秒` : ''));
         if (gap && gap < 15) warn(`⚠️ 两次跳转只隔了 ${gap} 秒，如果内容被跳过请把 skipCompleted 设为 false`);
         pendingAutoplay = 4;   // 稍后尝试自动播放几次
@@ -547,7 +584,7 @@
         return true;
       }
       if (type === 'quiz') {
-        skippedQuizzes.push(target.n.title);
+        addPending(target.n.title, 'quiz');
         log(`「${target.n.title}」是测验/作业类任务点 → 已跳过（不代答，请自行补做）`);
         setStatus(`已跳过测验：${target.n.title}`);
         continue;   // 继续往后跳
@@ -601,10 +638,14 @@
   }
 
   function updateStats() {
+    const q = pendingTasks.filter((p) => p.kind === 'quiz').length;
+    const l = pendingTasks.filter((p) => p.kind === 'left').length;
     const s = document.getElementById('auto-next-stats');
-    if (s) s.textContent = `跳转 ${switchCount} 次 · 跳过测验 ${skippedQuizzes.length} 个`;
+    if (s) s.textContent = `跳转 ${switchCount} 次 · 跳过测验 ${q} 个 · 遗留 ${l} 个`;
     const k = document.getElementById('auto-next-skipped');
-    if (k) k.textContent = skippedQuizzes.length ? '已跳过：' + skippedQuizzes.slice(-4).join('、') : '';
+    if (k) k.textContent = pendingTasks.length
+      ? '待办：' + pendingTasks.slice(-5).map((p) => p.title).join('、')
+      : '';
   }
 
   /* ------------------------------------------------------------------
@@ -777,7 +818,8 @@
       prev: () => goRelativeChapter(-1),
       incomplete: () => goNextIncomplete(),
       detect: () => detectContentType(),
-      skipped: () => skippedQuizzes.slice(),
+      skipped: () => pendingTasks.filter((p) => p.kind === 'quiz').map((p) => p.title),
+      pending: () => pendingTasks.map((p) => `${p.kind === 'quiz' ? '[跳过测验]' : '[遗留任务]'} ${p.title}`),
       ended: () => handleEnded('手动触发'),
       scan: () => scanVideos(),
       on: () => { enabled = true; log('已启用'); },
