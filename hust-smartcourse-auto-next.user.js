@@ -2,7 +2,7 @@
 // @name         HUST SmartCourse 自动连播下一节
 // @name:en      HUST SmartCourse Auto Next
 // @namespace    https://github.com/Charlotte5622/hust-smartcourse
-// @version      1.7.1
+// @version      1.8.0
 // @description  超星/智慧课程视频播完后自动点击目录里的下一节，支持顺序连播、跨 iframe 目录识别、防多跳
 // @author       Charlotte5622
 // @homepageURL  https://github.com/Charlotte5622/hust-smartcourse
@@ -597,35 +597,141 @@
   function setStatus(s) {
     const el = document.getElementById('auto-next-status');
     if (el) el.textContent = s;
+    updateStats();
+  }
+
+  function updateStats() {
+    const s = document.getElementById('auto-next-stats');
+    if (s) s.textContent = `跳转 ${switchCount} 次 · 跳过测验 ${skippedQuizzes.length} 个`;
+    const k = document.getElementById('auto-next-skipped');
+    if (k) k.textContent = skippedQuizzes.length ? '已跳过：' + skippedQuizzes.slice(-4).join('、') : '';
+  }
+
+  /* ------------------------------------------------------------------
+   *  面板上的手动导航（不依赖视频是否播完，点一下就走）
+   * ------------------------------------------------------------------ */
+  async function goRelativeChapter(offset) {
+    const nodes = await waitFor(collectChapterNodes, 5000, 300);
+    if (!nodes || !nodes.length) { setStatus('目录还没加载出来'); return false; }
+    const idx = findCurrentIndex(nodes);
+    if (idx < 0) { setStatus('无法定位当前章节'); return false; }
+    const t = nodes[idx + offset];
+    if (!t) { setStatus(offset > 0 ? '已经是最后一节了' : '已经是第一节了'); return false; }
+    log(`手动${offset > 0 ? '下一节' : '上一节'} →`, t.title);
+    clickNode(t);
+    return true;
+  }
+
+  async function goNextIncomplete() {
+    const nodes = await waitFor(collectChapterNodes, 5000, 300);
+    if (!nodes || !nodes.length) { setStatus('目录还没加载出来'); return false; }
+    const idx = findCurrentIndex(nodes);
+    const start = idx >= 0 ? idx + 1 : 0;
+    for (let i = start; i < nodes.length; i++) {
+      if (getCompleteState(nodes[i].el) === true) continue;
+      log('跳到下一个未完成 →', nodes[i].title);
+      setStatus('跳到未完成：' + nodes[i].title);
+      clickNode(nodes[i]);
+      return true;
+    }
+    setStatus('后面没有未完成的节点了');
+    return false;
   }
 
   function buildPanel() {
     if (!IS_TOP || !document.body || document.getElementById('auto-next-panel')) return;
+
+    if (!document.getElementById('auto-next-style')) {
+      const st = document.createElement('style');
+      st.id = 'auto-next-style';
+      st.textContent =
+        '#auto-next-panel .an-btn{flex:1;cursor:pointer;border:0;border-radius:4px;padding:5px 6px;' +
+        'background:#2d8cf0;color:#fff;font-size:11px;font-family:inherit;white-space:nowrap;line-height:1.5}' +
+        '#auto-next-panel .an-btn:hover{filter:brightness(1.15)}' +
+        '#auto-next-panel .an-btn:active{transform:translateY(1px)}' +
+        '#auto-next-panel .an-btn[disabled]{opacity:.5;cursor:default}';
+      (document.head || document.documentElement).appendChild(st);
+    }
+
     const d = document.createElement('div');
     d.id = 'auto-next-panel';
     d.innerHTML =
-      '<div style="font-weight:700;margin-bottom:4px">🎬 自动连播' +
-      '<span id="auto-next-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#22c55e;margin-left:6px"></span></div>' +
-      '<div id="auto-next-status" style="opacity:.85;max-width:230px;line-height:1.4">待机中</div>' +
-      '<button id="auto-next-toggle" style="margin-top:6px;cursor:pointer;border:0;border-radius:4px;padding:3px 10px;background:#2d8cf0;color:#fff;font-size:12px">暂停</button>';
+      '<div id="auto-next-head" style="display:flex;align-items:center;gap:6px;font-weight:700;cursor:move;user-select:none">' +
+        '<span>🎬 自动连播</span>' +
+        '<span id="auto-next-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#22c55e"></span>' +
+        '<span style="flex:1"></span>' +
+        '<span id="auto-next-fold" style="cursor:pointer;padding:0 5px;opacity:.7;font-weight:400" title="折叠/展开">—</span>' +
+      '</div>' +
+      '<div id="auto-next-body">' +
+        '<div id="auto-next-status" style="opacity:.9;line-height:1.45;word-break:break-all;margin-top:6px">待机中</div>' +
+        '<div id="auto-next-stats" style="opacity:.7;margin-top:5px;font-size:11px">跳转 0 次 · 跳过测验 0 个</div>' +
+        '<div id="auto-next-skipped" style="opacity:.7;margin-top:2px;font-size:11px;line-height:1.4;word-break:break-all"></div>' +
+        '<div style="display:flex;gap:4px;margin-top:9px">' +
+          '<button class="an-btn" id="an-prev">⏮ 上一节</button>' +
+          '<button class="an-btn" id="an-next">⏭ 下一节</button>' +
+        '</div>' +
+        '<div style="display:flex;gap:4px;margin-top:4px">' +
+          '<button class="an-btn" id="an-incomplete">⏩ 下一个未完成</button>' +
+          '<button class="an-btn" id="an-toggle" style="background:#ef4444">⏸ 暂停</button>' +
+        '</div>' +
+      '</div>';
+
     Object.assign(d.style, {
-      position: 'fixed', right: '16px', bottom: '16px', zIndex: 999999,
-      background: 'rgba(20,22,26,.86)', color: '#fff', fontSize: '12px',
-      padding: '10px 12px', borderRadius: '8px', boxShadow: '0 4px 16px rgba(0,0,0,.35)',
+      position: 'fixed', right: '16px', bottom: '16px', zIndex: 2147483647,
+      width: '272px', boxSizing: 'border-box',
+      background: 'rgba(20,22,26,.93)', color: '#fff', fontSize: '12px',
+      padding: '10px 12px', borderRadius: '8px',
+      boxShadow: '0 6px 20px rgba(0,0,0,.45)',
       fontFamily: 'system-ui,-apple-system,"Microsoft YaHei",sans-serif',
-      transition: 'opacity .3s', opacity: '.75',
+      transition: 'opacity .3s', opacity: '.92',
+      maxHeight: '70vh', overflow: 'auto',
     });
     d.addEventListener('mouseenter', () => (d.style.opacity = '1'));
-    d.addEventListener('mouseleave', () => (d.style.opacity = '.75'));
+    d.addEventListener('mouseleave', () => (d.style.opacity = '.92'));
     document.body.appendChild(d);
 
-    d.querySelector('#auto-next-toggle').addEventListener('click', (e) => {
+    // ---- 拖动：面板挡住内容时自己拖走 ----
+    const head = d.querySelector('#auto-next-head');
+    let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
+    head.addEventListener('mousedown', (e) => {
+      if (e.target.id === 'auto-next-fold') return;
+      const r = d.getBoundingClientRect();
+      sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
+      d.style.right = 'auto'; d.style.bottom = 'auto';
+      d.style.left = ox + 'px'; d.style.top = oy + 'px';
+      dragging = true;
+      e.preventDefault();
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      d.style.left = Math.max(0, Math.min(window.innerWidth - 60, ox + e.clientX - sx)) + 'px';
+      d.style.top = Math.max(0, Math.min(window.innerHeight - 34, oy + e.clientY - sy)) + 'px';
+    });
+    window.addEventListener('mouseup', () => { dragging = false; });
+
+    // ---- 折叠 ----
+    d.querySelector('#auto-next-fold').addEventListener('click', () => {
+      const body = d.querySelector('#auto-next-body');
+      const folded = body.style.display === 'none';
+      body.style.display = folded ? '' : 'none';
+      d.querySelector('#auto-next-fold').textContent = folded ? '—' : '+';
+      d.style.width = folded ? '272px' : '152px';
+    });
+
+    // ---- 按钮 ----
+    d.querySelector('#an-prev').addEventListener('click', () => goRelativeChapter(-1));
+    d.querySelector('#an-next').addEventListener('click', () => goRelativeChapter(1));
+    d.querySelector('#an-incomplete').addEventListener('click', () => goNextIncomplete());
+    d.querySelector('#an-toggle').addEventListener('click', (e) => {
       enabled = !enabled;
-      e.target.textContent = enabled ? '暂停' : '启用';
+      e.target.textContent = enabled ? '⏸ 暂停' : '▶ 启用';
+      e.target.style.background = enabled ? '#ef4444' : '#22c55e';
       d.querySelector('#auto-next-dot').style.background = enabled ? '#22c55e' : '#ef4444';
       setStatus(enabled ? '已启用' : '已暂停');
       log(enabled ? '已启用' : '已暂停');
     });
+
+    updateStats();
   }
 
   /* ==================================================================
@@ -668,6 +774,8 @@
       list: () => collectChapterNodes().map((n, i) => `${i}. ${n.title}`),
       states: () => collectChapterNodes().map((n, i) => `${i}. [${getCompleteState(n.el)}] ${n.title}`),
       next: () => goNextChapter(),
+      prev: () => goRelativeChapter(-1),
+      incomplete: () => goNextIncomplete(),
       detect: () => detectContentType(),
       skipped: () => skippedQuizzes.slice(),
       ended: () => handleEnded('手动触发'),
