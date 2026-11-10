@@ -4,7 +4,7 @@
 
 **华中科技大学「智慧课程 / 超星」视频播完，自动切到下一节**
 
-[![Version](https://img.shields.io/badge/version-1.6.0-2d8cf0?style=flat-square)](https://github.com/Charlotte5622/hust-smartcourse)
+[![Version](https://img.shields.io/badge/version-1.7.0-2d8cf0?style=flat-square)](https://github.com/Charlotte5622/hust-smartcourse)
 [![License](https://img.shields.io/badge/license-MIT-22c55e?style=flat-square)](LICENSE)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-supported-orange?style=flat-square)](https://www.tampermonkey.net/)
 [![Violentmonkey](https://img.shields.io/badge/Violentmonkey-supported-blueviolet?style=flat-square)](https://violentmonkey.github.io/)
@@ -27,6 +27,9 @@
 
 它**不修改任何请求、不伪造播放进度**，只是在正确的时机替你点了一下目录。每节的观看时长仍然由平台自己统计，你该看多久还是得看多久。
 
+> **它做什么**：导航自动化 —— 检测视频结束、找到下一节、点进去、开始播放。
+> **它不做什么**：答题、填答案、自动提交测验。<u>脚本会跳过章节测验并记录下来，让你自己回头做。</u>
+
 ## ✨ 特性
 
 | | 特性 | 说明 |
@@ -34,7 +37,9 @@
 | 🔁 | **顺序连播** | 默认严格按目录顺序推进，一节都不跳 |
 | 🧭 | **跨 iframe 找目录** | 新版「智慧课程」的目录面板本身在 iframe 里，脚本会递归扫描所有同源文档 |
 | 🎯 | **精确自我定位** | 用 URL 里的 `chapterId` 匹配目录节点，不依赖会变的 CSS 类名 |
-| 🛡️ | **防多跳** | 冷却期 + 切换前复查 + 只点"关闭"类弹窗，不会一次跳两节 |
+| ⏭️ | **自动跳过测验** | 遇到章节测验/作业等非视频任务点自动略过并记录，不影响连播节奏 |
+| 🛡️ | **不猜、不代答** | 认不出类型的任务点会停下来等你确认；**永远不会替你答题或提交** |
+| 🔒 | **防多跳** | 冷却期 + 切换前复查 + 只点"关闭"类弹窗，不会一次跳两节 |
 | ⏯️ | **自动播放** | 切过去自动点播放，被浏览器拦截时可选择静音重试 |
 | 🎛️ | **可视化面板** | 右下角常驻状态面板，随时暂停/启用 |
 | 🔇 | **屏蔽平台报错** | 顺手消掉超星播放器自身的 `picUrl` 报错噪音 |
@@ -100,6 +105,10 @@ const CFG = {
   delayBeforeNext : 3000,   // 视频结束后等多久(ms)再切换
   switchCooldown  : 8000,   // 两次自动切换的最小间隔(ms)
   skipCompleted   : false,  // false=顺序播放；true=跳过已完成的章节
+  skipNonVideo    : true,   // 自动跳过章节测验/作业等非视频任务点
+  nonVideoWaitMs  : 6000,   // 判断任务点类型的等待上限
+  contentSettleMs : 1500,   // 点击后等 iframe 换完内容再判断
+  maxHopsPerStep  : 10,     // 一次连播最多连续跳过几个非视频节点
   autoPlay        : true,   // 切换后自动点播放
   muteIfBlocked   : false,  // 自动播放被拦截时，静音重试
   clickPopups     : true,   // 自动关掉"继续观看"类弹窗
@@ -114,6 +123,8 @@ const CFG = {
 | `delayBeforeNext` | 发现"任务点未记录完成"→ 调大到 `5000`，给平台更多上报时间 |
 | `switchCooldown` | 偶尔还会连跳 → 调大到 `15000` |
 | `skipCompleted` | 想连已完成的章节一起重刷 → 保持 `false`；想跳过绿勾章节 → 改 `true` |
+| `skipNonVideo` | 想连章节测验也一起停下来自己做 → 改 `false` |
+| `maxHopsPerStep` | 连续跳过的测验太多想中途停一下 → 调小到 `3` |
 | `muteIfBlocked` | 切过去后停在暂停状态 → 改 `true`（代价是静音播放） |
 | `clickPopups` | 担心误点弹窗 → 改 `false` |
 | `debug` | 平时嫌日志吵 → 改 `false` |
@@ -157,6 +168,8 @@ __autoNext.list()     // 完整目录顺序
 __autoNext.states()   // 每一节的完成状态判定
 __autoNext.next()     // 立刻执行一次跳转
 __autoNext.ended()    // 模拟"视频播完"的完整流程
+__autoNext.detect()   // 判断当前章节是 video / quiz / unknown
+__autoNext.skipped()  // 本次自动跳过了哪些测验
 __autoNext.off()      // 暂停
 __autoNext.on()       // 启用
 ```
@@ -200,6 +213,22 @@ __autoNext.on()       // 启用
 - 显示 `没找到下一个任务点` → 已经学到最后一节了。
 - 显示 `视频已不在片尾` → 那 3 秒里视频被续播了，属于正常保护。
 - 什么都没有 → 视频可能根本没触发结束事件，看 `__autoNext.info()` 里 `videos` 的 `t` 和 `d`。
+</details>
+
+<details>
+<summary><b>课程里有章节测验，脚本会怎么处理？</b></summary>
+
+**会跳过，但不会替你答。**
+
+流程是：点进一个章节 → 等 iframe 换完内容 → 判断里面是视频还是测验。
+
+- 识别为**视频** → 正常监听播放，播完继续
+- 识别为**测验/作业** → 记下来、继续往后找视频（日志会打印 `是测验/作业类任务点 → 已跳过（不代答，请自行补做）`）
+- **认不出来** → 停下并在面板提示，不猜、不硬跳
+
+被跳过的测验会累积在 `__autoNext.skipped()` 里，方便你回头补做。只想跳过一次几个，把 `maxHopsPerStep` 调小即可。
+
+> ⚠️ 本脚本**不包含也不会包含**任何答题、填答案、自动提交的功能。测验请自己做。
 </details>
 
 <details>
@@ -258,7 +287,8 @@ Firefox 的防诈骗保护。在控制台里手动敲 `allow pasting` 回车，�
 
 | 版本 | 内容 |
 |---|---|
-| **1.6.0** | **默认改为顺序播放**（`skipCompleted: false`）；修复"部分完成的章节被误判为已完成而跳过"；修复循环中反复读取 `chapterId` 导致定位飘移；定位失败时不再从课程第一节开始 |
+| **1.7.0** | **新增自动跳过章节测验/作业**：点击后识别任务点类型，是测验就略过继续往后找视频；认不出类型则停下等你确认。新增 `detect` / `skipped` 调试命令 |
+| 1.6.0 | **默认改为顺序播放**（`skipCompleted: false`）；修复"部分完成的章节被误判为已完成而跳过"；修复循环中反复读取 `chapterId` 导致定位飘移；定位失败时不再从课程第一节开始 |
 | 1.5.0 | 修复一次跳两节：弹窗白名单移除「下一节/下一章」、点完弹窗复查 URL、切换前复查视频是否仍在片尾、冷却期改为到期复查 |
 | 1.4.0 | 新增 `silencePlayerBug`，屏蔽超星播放器自身的 `picUrl` 报错 |
 | 1.3.0 | 排除 `<link href=".../studentStudy.css">` 被误认成章节；点击后校验跳转是否成功 |
@@ -268,7 +298,8 @@ Firefox 的防诈骗保护。在控制台里手动敲 `allow pasting` 回车，�
 ## ⚠️ 免责声明
 
 - 本项目仅供**个人学习与自动化便利**使用，请勿用于刷课、代看等违反学校规定的用途。
-- 脚本只做「点击下一节」这一件事，**不修改、不伪造、不绕过**平台的任何学习时长统计。
+- 脚本只做「检测播放结束 + 点击下一节」这一件事，**不修改、不伪造、不绕过**平台的任何学习时长统计。
+- 脚本**不含任何答题功能**，遇到章节测验会自动跳过并记录，请自行完成。
 - 使用本脚本产生的任何后果由使用者自行承担，与作者无关。
 
 ## 📄 License

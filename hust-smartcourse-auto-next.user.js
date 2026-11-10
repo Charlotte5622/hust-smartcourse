@@ -2,7 +2,7 @@
 // @name         HUST SmartCourse 自动连播下一节
 // @name:en      HUST SmartCourse Auto Next
 // @namespace    https://github.com/Charlotte5622/hust-smartcourse
-// @version      1.6.0
+// @version      1.7.0
 // @description  超星/智慧课程视频播完后自动点击目录里的下一节，支持顺序连播、跨 iframe 目录识别、防多跳
 // @author       Charlotte5622
 // @homepageURL  https://github.com/Charlotte5622/hust-smartcourse
@@ -28,6 +28,10 @@
     switchCooldown  : 8000,  // 两次自动切换的最小间隔(ms)，防止重复触发导致连跳多节
     skipCompleted   : false, // ★顺序播放（默认）：严格按目录顺序，一节都不跳
                              //   改成 true 才会跳过绿勾（已完成）的章节
+    skipNonVideo    : true,  // ★自动跳过章节测验/作业等非视频任务点（只跳过，不代答）
+    nonVideoWaitMs  : 6000,  // 点进去后等多久判断任务点类型，超时则视为无法识别
+    contentSettleMs : 1500,  // 点击后等 iframe 换完内容再判断类型
+    maxHopsPerStep  : 10,    // 一次连播最多连续跳过几个非视频节点
     autoPlay        : true,  // 切换章节后，尝试自动点播放
     muteIfBlocked   : false, // 自动播放被浏览器拦截时，是否静音后重试（true 可能会静音播放）
     clickPopups     : true,  // 自动点掉"继续学习 / 下一节"之类的平台弹窗
@@ -49,6 +53,7 @@
   let lastSwitchAt = 0;      // 上次成功切换的时间戳
   let switchCount  = 0;      // 本次打开页面后自动切换的次数
   let retryTimer   = null;   // 冷却期结束后的一次性重试
+  const skippedQuizzes = []; // 本次被自动跳过的测验/作业（只记录，不代答）
 
   /* ==================================================================
    *  通用工具
@@ -418,54 +423,130 @@
     return false;
   }
 
+  /* ------------------------------------------------------------------
+   *  判断当前章节里加载的是哪种任务点
+   *  返回 'video' | 'quiz' | 'unknown'
+   *  —— 只做"识别"，不做任何答题动作
+   * ------------------------------------------------------------------ */
+  function detectContentType() {
+    const docs = sameOriginDocs();
+    let sawVideo = false;
+    let sawQuiz = false;
+
+    docs.forEach((doc) => {
+      try {
+        if (doc.querySelector('video')) sawVideo = true;
+
+        // ① 最可靠的信号：内嵌模块 iframe 的地址
+        doc.querySelectorAll('iframe').forEach((f) => {
+          const src = f.src || '';
+          if (/ananas\/modules\/video/i.test(src)) sawVideo = true;
+          if (/(\/work\/|\/exam-ans\/|\/exam\/|doHomeWork|selectWorkQuestion|reVersionTestStartNew|work\/selectWork)/i.test(src)) sawQuiz = true;
+        });
+
+        // ② 次可靠：测验特有的 DOM —— 多个选项、题目容器、提交按钮
+        const opts = doc.querySelectorAll('input[type=radio], input[type=checkbox]').length;
+        const qBox = doc.querySelector('.TiMu, .questionLi, [class*="questionLi"], [class*="examTitle"], #submitBtn, .ans-job-answer');
+        if (opts >= 2 || qBox) sawQuiz = true;
+
+        // ③ 兜底：正文同时出现"测验/答题"字样和交互控件
+        const body = (doc.body && doc.body.innerText) || '';
+        if (/(章节测验|测验|答题|请在下方作答)/.test(body.slice(0, 4000)) &&
+            doc.querySelector('textarea, input[type=text], button, .btn')) sawQuiz = true;
+      } catch (e) { /* 跨域文档，忽略 */ }
+    });
+
+    if (sawVideo) return 'video';   // 视频优先：宁可当视频，也不要把视频课误跳过
+    if (sawQuiz) return 'quiz';
+    return 'unknown';
+  }
+
   async function goNextChapter() {
-    const nodes = await waitFor(collectChapterNodes, 6000, 400);
+    let nodes = await waitFor(collectChapterNodes, 6000, 400);
     if (!nodes || !nodes.length) {
       warn('目录里没找到章节节点，尝试平台自带的下节按钮…');
       return clickPlatformNext();
     }
-    const curId = currentChapterId();   // ⚠️ 只读一次！循环里反复读，被平台中途改掉就会跳错节
-    log(`目录共采集到 ${nodes.length} 个章节节点，当前 chapterId = ${curId}`);
+    log(`目录共采集到 ${nodes.length} 个章节节点，当前 chapterId = ${currentChapterId()}`);
 
-    const idx = findCurrentIndex(nodes);
-    if (idx < 0) {
-      warn('未能定位当前章节，为避免跳到课程开头，改用平台自带「下一节」按钮');
-      return clickPlatformNext();
-    }
-    const start = idx + 1;
-    log(`当前在第 ${idx + 1} 个节点：${nodes[idx].title}`);
+    const maxHops = CFG.skipNonVideo ? CFG.maxHopsPerStep : 1;
 
-    for (let i = start; i < nodes.length; i++) {
-      const n = nodes[i];
-      if (curId && n.ids.has(curId)) { log('跳过当前节自身：', n.title); continue; }
-
-      if (CFG.skipCompleted) {
-        const done = getCompleteState(n.el);
-        log(`第 ${i + 1} 个候选：${n.title} ｜完成状态：` +
-            (done === true ? '已完成 → 跳过' : done === false ? '未完成 → 进入' : '未知 → 照常进入'));
-        if (done === true) continue;
-      } else {
-        log(`顺序播放 → 进入第 ${i + 1} 个节点：${n.title}`);
+    for (let hop = 1; hop <= maxHops; hop++) {
+      // 每跳一次都重新采集：平台导航后目录可能被重新渲染，旧的 DOM 引用会失效
+      if (hop > 1) {
+        await sleep(600);
+        nodes = await waitFor(collectChapterNodes, 4000, 300);
+        if (!nodes || !nodes.length) { warn('跳转后目录采集失败'); return true; }
       }
 
-      // 点完校验：URL 里的 chapterId 没变就说明没跳成功
+      const idx = findCurrentIndex(nodes);
+      if (idx < 0) {
+        warn('未能定位当前章节，为避免跳到课程开头，改用平台自带「下一节」按钮');
+        return clickPlatformNext();
+      }
+      if (hop === 1) log(`当前在第 ${idx + 1} 个节点：${nodes[idx].title}`);
+
+      // 向后找第一个可进入的节点
+      let target = null;
+      for (let i = idx + 1; i < nodes.length; i++) {
+        const n = nodes[i];
+        if (CFG.skipCompleted) {
+          const done = getCompleteState(n.el);
+          log(`第 ${i + 1} 个候选：${n.title} ｜完成状态：` +
+              (done === true ? '已完成 → 跳过' : done === false ? '未完成' : '未知'));
+          if (done === true) continue;
+        } else {
+          log(`顺序播放 → 第 ${i + 1} 个节点：${n.title}`);
+        }
+        target = { n, i };
+        break;
+      }
+      if (!target) {
+        if (hop === 1) {
+          log('当前节之后已经没有可进入的节点了');
+          setStatus('🎉 后面都学完了');
+          return false;
+        }
+        log('跳到最后也没有可进入的节点了');
+        return true;
+      }
+
+      // 点击并校验
       const before = currentChapterId();
-      clickNode(n);
+      clickNode(target.n);
       const changed = await waitFor(() => currentChapterId() !== before, 5000, 250);
       if (!changed) {
         warn('点击后章节没有变化，改用平台自带「下一节」按钮兜底');
         clickPlatformNext();
+        return true;
       }
+
+      if (hop >= maxHops) return true;
+
+      // 判断进去的到底是什么内容
+      await sleep(CFG.contentSettleMs);
+      const type = await waitFor(() => {
+        const t = detectContentType();
+        return t === 'unknown' ? null : t;
+      }, CFG.nonVideoWaitMs, 500);
+
+      if (type === 'video') {
+        if (hop > 1) log(`已跳过 ${hop - 1} 个非视频任务点，落在视频节：${target.n.title}`);
+        return true;
+      }
+      if (type === 'quiz') {
+        skippedQuizzes.push(target.n.title);
+        log(`「${target.n.title}」是测验/作业类任务点 → 已跳过（不代答，请自行补做）`);
+        setStatus(`已跳过测验：${target.n.title}`);
+        continue;   // 继续往后跳
+      }
+
+      // 既没有视频也认不出测验 —— 不猜，停下来让用户确认
+      warn(`「${target.n.title}」进去后既没发现视频、也没认出测验，已停下等你手动确认`);
+      setStatus('⚠️ 无法识别该任务点类型，已停下');
       return true;
     }
-
-    // 后面的都完成/没有了
-    if (CFG.skipCompleted) {
-      log('当前节之后已经没有未完成任务点了');
-      setStatus('🎉 后面都学完了');
-      return false;
-    }
-    return clickPlatformNext();
+    return true;
   }
 
   /* ==================================================================
@@ -575,6 +656,8 @@
       list: () => collectChapterNodes().map((n, i) => `${i}. ${n.title}`),
       states: () => collectChapterNodes().map((n, i) => `${i}. [${getCompleteState(n.el)}] ${n.title}`),
       next: () => goNextChapter(),
+      detect: () => detectContentType(),
+      skipped: () => skippedQuizzes.slice(),
       ended: () => handleEnded('手动触发'),
       scan: () => scanVideos(),
       on: () => { enabled = true; log('已启用'); },
